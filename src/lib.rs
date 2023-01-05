@@ -1,33 +1,27 @@
-use attrs::SisAttrs;
-use builder::self_referencing_impl;
-use syn::{parse_macro_input, ItemStruct};
+#![no_std]
+#![feature(unboxed_closures, fn_traits, tuple_trait)]
 
-mod attrs;
-mod builder;
+extern crate sis_proc;
+pub use sis_proc::*;
 
-#[proc_macro_attribute]
-pub fn self_referencing (attrs: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let SisAttrs { attrs } = parse_macro_input!(attrs as SisAttrs);
-    let item = parse_macro_input!(item as ItemStruct);
-    return self_referencing_impl(&attrs, item).into()
+use core::{future::Future, marker::Tuple};
+
+#[doc(hidden)]
+pub extern crate core;
+
+pub trait FutureGenerator<Args: Tuple>: FnOnce<Args> {
+    type Future: Future<Output = <Self as FutureGenerator<Args>>::Output>;
+    type Output;
+
+    fn call (self, args: Args) -> Self::Future;
 }
 
-pub(crate) fn to_snake_case (camel_case: &str) -> String {
-    let mut result = String::with_capacity(camel_case.len());
-    let mut chars = camel_case.chars();
+impl<Args: Tuple, F: FnOnce<Args>> FutureGenerator<Args> for F where F::Output: Future {
+    type Future = F::Output;
+    type Output = <F::Output as Future>::Output;
 
-    if let Some(first) = chars.next() {
-        result.extend(first.to_lowercase());
+    #[inline]
+    fn call (self, args: Args) -> Self::Future {
+        self.call_once(args)
     }
-
-    for c in chars {
-        if c.is_uppercase() {
-            result.push('_');
-            result.extend(c.to_lowercase())
-        } else {
-            result.push(c);
-        }
-    }
-
-    return result
 }

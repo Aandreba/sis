@@ -15,7 +15,14 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
     }.into_iter().map(RefCell::new).collect::<Punctuated<_, Token![,]>>();
 
     let (impl_generics, ty_generics, where_generics) = generics.split_for_impl();
-    let [new, field_def, field_new, getter, init_arg, init, try_init_arg, try_init, drop] = match builder_fields(&fields) {
+    let [
+        new, field_def, field_new, getter,
+        init_arg, init,
+        async_init_arg, async_init,
+        try_init_arg, try_init,
+        async_try_init_arg, async_try_init,
+        drop
+    ] = match builder_fields(&fields) {
         Ok(x) => x,
         Err(e) => return e.to_compile_error()
     };
@@ -49,22 +56,35 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             }
 
             #[doc(hidden)]
-            #vis unsafe fn _initialize (self: ::core::pin::Pin<&'this mut Self>, #(#init_arg),*) {
-                let Self { #(#field_names,)* _pin }: &'this mut Self = ::core::pin::Pin::into_inner_unchecked(self);
+            #vis unsafe fn _initialize (self: ::sis::core::pin::Pin<&'this mut Self>, #(#init_arg),*) {
+                let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
                 #(#init)*
             }
 
             #[doc(hidden)]
-            #vis unsafe fn _try_initialize<E> (self: ::core::pin::Pin<&'this mut Self>, #(#try_init_arg),*) -> ::core::result::Result<(), E> {
-                let Self { #(#field_names,)* _pin }: &'this mut Self = ::core::pin::Pin::into_inner_unchecked(self);
+            #vis async unsafe fn _initialize_async (self: ::sis::core::pin::Pin<&'this mut Self>, #(#async_init_arg),*) {
+                let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
+                #(#async_init)*
+            }
+
+            #[doc(hidden)]
+            #vis unsafe fn _try_initialize<E> (self: ::sis::core::pin::Pin<&'this mut Self>, #(#try_init_arg),*) -> ::sis::core::result::Result<(), E> {
+                let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
                 #(#try_init)*
+                return Ok(())
+            }
+
+            #[doc(hidden)]
+            #vis async unsafe fn _try_initialize_async<E> (self: ::sis::core::pin::Pin<&'this mut Self>, #(#async_try_init_arg),*) -> ::sis::core::result::Result<(), E> {
+                let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
+                #(#async_try_init)*
                 return Ok(())
             }
 
             #(#getter)*
         }
 
-        impl #impl_generics ::core::ops::Drop for #ident #ty_generics #where_generics {
+        impl #impl_generics ::sis::core::ops::Drop for #ident #ty_generics #where_generics {
             fn drop (&mut self) {
                 unsafe {
                     #(#drop)*
@@ -76,9 +96,22 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             ({ $($new:expr),* }, { $($init:expr),* }, $name:ident) => {
                 let mut $name = unsafe { <#ident>::_new_uninit($($new),*) };
                 unsafe {
-                    let $name = &mut *::core::ptr::addr_of_mut!($name);
+                    let $name = &mut *::sis::core::ptr::addr_of_mut!($name);
                     let $name = core::pin::Pin::new_unchecked($name);
                     $name._initialize($($init),*);
+                }
+                // Shadow the original binding so that it can't be directly accessed
+                // ever again.
+                #[allow(unused_mut)]
+                let mut $name = unsafe { core::pin::Pin::new_unchecked(&mut $name) };
+            };
+
+            ({ $($new:expr),* }, { $($init:expr),* }, async $name:ident) => {
+                let mut $name = unsafe { <#ident>::_new_uninit($($new),*) };
+                unsafe {
+                    let $name = &mut *::sis::core::ptr::addr_of_mut!($name);
+                    let $name = core::pin::Pin::new_unchecked($name);
+                    $name._initialize_async($($init),*).await;
                 }
                 // Shadow the original binding so that it can't be directly accessed
                 // ever again.
@@ -89,8 +122,18 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             ({ $($new:expr),* }, { $($init:expr),* }, box $name:ident) => {
                 let mut $name = unsafe { std::boxed::Box::new(<#ident>::_new_uninit($($new),*)) };
                 unsafe {
-                    let $name = &mut *(::core::ops::DerefMut::deref_mut(&mut $name) as *mut _);
+                    let $name = &mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _);
                     <#ident>::_initialize(core::pin::Pin::new_unchecked($name), $($init),*);
+                }
+                #[allow(unused_mut)]
+                let mut $name = std::boxed::Box::into_pin($name);
+            };
+
+            ({ $($new:expr),* }, { $($init:expr),* }, async box $name:ident) => {
+                let mut $name = unsafe { std::boxed::Box::new(<#ident>::_new_uninit($($new),*)) };
+                unsafe {
+                    let $name = &mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _);
+                    <#ident>::_initialize_async(core::pin::Pin::new_unchecked($name), $($init),*).await;
                 }
                 #[allow(unused_mut)]
                 let mut $name = std::boxed::Box::into_pin($name);
@@ -99,8 +142,18 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             ({ $($new:expr),* }, { $($init:expr),* }, box $name:ident in $alloc:expr) => {
                 let mut $name = unsafe { std::boxed::Box::new_in(<#ident>::_new_uninit($($new),*), $alloc) };
                 unsafe {
-                    let $name = &mut *(::core::ops::DerefMut::deref_mut(&mut $name) as *mut _);
+                    let $name = &mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _);
                     <#ident>::_initialize(core::pin::Pin::new_unchecked($name), $($init),*);
+                }
+                #[allow(unused_mut)]
+                let mut $name = std::boxed::Box::into_pin($name);
+            };
+
+            ({ $($new:expr),* }, { $($init:expr),* }, async box $name:ident in $alloc:expr) => {
+                let mut $name = unsafe { std::boxed::Box::new_in(<#ident>::_new_uninit($($new),*), $alloc) };
+                unsafe {
+                    let $name = &mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _);
+                    <#ident>::_initialize_async(core::pin::Pin::new_unchecked($name), $($init),*).await;
                 }
                 #[allow(unused_mut)]
                 let mut $name = std::boxed::Box::into_pin($name);
@@ -111,8 +164,22 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             ({ $($new:expr),* }, { $($init:expr),* }, $name:ident) => {
                 let mut $name = unsafe { <#ident>::_new_uninit($($new),*) };
                 unsafe {                    
-                    if let Err(e) = (core::pin::Pin::new_unchecked(&mut *::core::ptr::addr_of_mut!($name)))._try_initialize($($init),*) {
-                        ::core::mem::forget($name);
+                    if let Err(e) = (core::pin::Pin::new_unchecked(&mut *::sis::core::ptr::addr_of_mut!($name)))._try_initialize($($init),*) {
+                        ::sis::core::mem::forget($name);
+                        return Err(e)
+                    }
+                }
+                // Shadow the original binding so that it can't be directly accessed
+                // ever again.
+                #[allow(unused_mut)]
+                let mut $name = unsafe { core::pin::Pin::new_unchecked(&mut $name) };
+            };
+
+            ({ $($new:expr),* }, { $($init:expr),* }, async $name:ident) => {
+                let mut $name = unsafe { <#ident>::_new_uninit($($new),*) };
+                unsafe {
+                    if let Err(e) = (core::pin::Pin::new_unchecked(&mut *::sis::core::ptr::addr_of_mut!($name)))._try_initialize_async($($init),*).await {
+                        ::sis::core::mem::forget($name);
                         return Err(e)
                     }
                 }
@@ -125,7 +192,18 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             ({ $($new:expr),* }, { $($init:expr),* }, box $name:ident) => {
                 let mut $name = unsafe { std::boxed::Box::new(<#ident>::_new_uninit($($new),*)) };
                 unsafe {
-                    if let Err(e) = <#ident>::_try_initialize(core::pin::Pin::new_unchecked(&mut *(::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*) {
+                    if let Err(e) = <#ident>::_try_initialize(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*) {
+                        core::mem::forget($name);
+                    }
+                }
+                #[allow(unused_mut)]
+                let mut $name = std::boxed::Box::into_pin($name);
+            };
+
+            ({ $($new:expr),* }, { $($init:expr),* }, async box $name:ident) => {
+                let mut $name = unsafe { std::boxed::Box::new(<#ident>::_new_uninit($($new),*)) };
+                unsafe {
+                    if let Err(e) = <#ident>::_try_initialize_async(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*).await {
                         core::mem::forget($name);
                     }
                 }
@@ -136,7 +214,18 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             ({ $($new:expr),* }, { $($init:expr),* }, box $name:ident in $alloc:expr) => {
                 let mut $name = unsafe { std::boxed::Box::new_in(<#ident>::_new_uninit($($new),*), $alloc) };
                 unsafe {
-                    if let Err(e) = <#ident>::_try_initialize(core::pin::Pin::new_unchecked(&mut *(::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*) {
+                    if let Err(e) = <#ident>::_try_initialize(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*) {
+                        core::mem::forget($name);
+                    }
+                }
+                #[allow(unused_mut)]
+                let mut $name = std::boxed::Box::into_pin($name);
+            };
+
+            ({ $($new:expr),* }, { $($init:expr),* }, async box $name:ident in $alloc:expr) => {
+                let mut $name = unsafe { std::boxed::Box::new_in(<#ident>::_new_uninit($($new),*), $alloc) };
+                unsafe {
+                    if let Err(e) = <#ident>::_try_initialize_async(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*).await {
                         core::mem::forget($name);
                     }
                 }
@@ -147,15 +236,22 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
     }
 }
 
-fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Result<[Vec<TokenStream>; 9]> {
+fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Result<[Vec<TokenStream>; 13]> {
     let mut new_output = Vec::with_capacity(fields.len());
     let mut field_def_output = Vec::with_capacity(fields.len());
     let mut field_new_output = Vec::with_capacity(fields.len());
     let mut getter_output = Vec::with_capacity(fields.len());
+
     let mut init_arg_output = Vec::with_capacity(fields.len());
+    let mut async_init_arg_output = Vec::with_capacity(fields.len());
     let mut try_init_arg_output = Vec::with_capacity(fields.len());
+    let mut async_try_init_arg_output = Vec::with_capacity(fields.len());
+    
     let mut init_output = Vec::with_capacity(fields.len());
+    let mut async_init_output = Vec::with_capacity(fields.len());
     let mut try_init_output = Vec::with_capacity(fields.len());
+    let mut async_try_init_output = Vec::with_capacity(fields.len());
+    
     let mut drop_output = Vec::with_capacity(fields.len());
 
     let mut previous_fields = Vec::with_capacity(fields.len());
@@ -187,11 +283,11 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 .unzip::<_, _, Vec<_>, Vec<_>>();
 
             field_def_output.push(quote! {
-                #(#attrs)* #ident #colon_token ::core::mem::MaybeUninit<#ty>
+                #(#attrs)* #ident #colon_token ::sis::core::mem::MaybeUninit<#ty>
             });
 
             field_new_output.push(quote! {
-                #ident #colon_token ::core::mem::MaybeUninit::uninit()
+                #ident #colon_token ::sis::core::mem::MaybeUninit::uninit()
             });
 
             // Shared getter
@@ -249,10 +345,10 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
             for (target_mut, target_ty) in target_mut.iter().zip(target_ty.iter()) {
                 let (ty, pinning) = match target_mut {
                     Some(target_mut) => (
-                        quote! { ::core::pin::Pin<&'this #target_mut #target_ty> },
+                        quote! { ::sis::core::pin::Pin<&'this #target_mut #target_ty> },
                         quote! {
                             #(
-                                let #target_ident = ::core::pin::Pin::new_unchecked(#target_ident as &'this #target_mut #target_ty)
+                                let #target_ident = ::sis::core::pin::Pin::new_unchecked(#target_ident as &'this #target_mut #target_ty)
                             )*
                         }
                     ),
@@ -273,7 +369,7 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
 
             // Regular initializer
             init_arg_output.push(quote! {
-                #init_f: impl ::core::ops::FnOnce(
+                #init_f: impl ::sis::core::ops::FnOnce(
                     #(#init_args),*
                 ) -> #ty
             });
@@ -282,11 +378,25 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 #ident.write(#init_f (#(#target_ident),*));
             }});
 
+            // Async regular initializer
+            async_init_arg_output.push(quote! {
+                #init_f: impl ::sis::FutureGenerator<
+                    (#(#init_args,)*),
+                    Output = #ty
+                >
+            });
+            async_init_output.push(quote! {{
+                #(#init_pinning_args)*
+                #ident.write(
+                    #init_f.call((#(#target_ident,)*)).await
+                );
+            }});
+
             // Fallible initializer
             try_init_arg_output.push(quote! {
-                #init_f: impl ::core::ops::FnOnce(
+                #init_f: impl ::sis::core::ops::FnOnce(
                     #(#init_args),*
-                ) -> ::core::result::Result<#ty, E>
+                ) -> ::sis::core::result::Result<#ty, E>
             });
             try_init_output.push(quote! {{
                 #(#init_pinning_args)*
@@ -301,9 +411,29 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 };
             }});
 
+            // Fallible async initializer
+            async_try_init_arg_output.push(quote! {
+                #init_f: impl ::sis::FutureGenerator<
+                    (#(#init_args,)*),
+                    Output = ::sis::core::result::Result<#ty, E>
+                >
+            });
+            async_try_init_output.push(quote! {{
+                #(#init_pinning_args)*
+                match #init_f.call( (#(#target_ident,)*) ).await {
+                    Ok(x) => #ident.write(x),
+                    Err(e) => {
+                        #(
+                            #previous_fields.assume_init_drop();
+                        )*
+                        return Err(e)
+                    }
+                };
+            }});
+
             // Destructor
             drop_output.push(quote! {
-                if ::core::mem::needs_drop::<#ty>() {
+                if ::sis::core::mem::needs_drop::<#ty>() {
                     self.#getter_ident.assume_init_drop()
                 }
             });
@@ -318,11 +448,11 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
     }
 
     field_def_output.push(quote! {
-        _pin: ::core::marker::PhantomPinned
+        _pin: ::sis::core::marker::PhantomPinned
     });
 
     field_new_output.push(quote! {
-        _pin: ::core::marker::PhantomPinned
+        _pin: ::sis::core::marker::PhantomPinned
     });
 
     return Ok([
@@ -332,8 +462,12 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
         getter_output,
         init_arg_output,
         init_output,
+        async_init_arg_output,
+        async_init_output,
         try_init_arg_output,
         try_init_output,
+        async_try_init_arg_output,
+        async_try_init_output,
         drop_output
     ])
 }
