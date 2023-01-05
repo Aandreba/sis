@@ -45,8 +45,9 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
         }
 
         impl #impl_generics #ident #ty_generics #where_generics {
-            #[doc(hidden)]
             #[inline]
+            #[doc(hidden)]
+            #[allow(unused)]
             #vis #const_token unsafe fn _new_uninit (#(#new),*) -> Self {
                 return Self {
                     #(
@@ -56,35 +57,42 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             }
 
             #[doc(hidden)]
+            #[allow(unused)]
             #vis unsafe fn _initialize (self: ::sis::core::pin::Pin<&'this mut Self>, #(#init_arg),*) {
                 let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
                 #(#init)*
             }
 
+            /*
             #[doc(hidden)]
+            #[allow(unused)]
             #vis async unsafe fn _initialize_async (self: ::sis::core::pin::Pin<&'this mut Self>, #(#async_init_arg),*) {
                 let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
                 #(#async_init)*
             }
 
             #[doc(hidden)]
-            #vis unsafe fn _try_initialize<E> (self: ::sis::core::pin::Pin<&'this mut Self>, #(#try_init_arg),*) -> ::sis::core::result::Result<(), E> {
+            #[allow(unused)]
+            #vis unsafe fn _try_initialize<E: 'static> (self: ::sis::core::pin::Pin<&'this mut Self>, #(#try_init_arg),*) -> ::sis::core::result::Result<(), E> {
                 let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
                 #(#try_init)*
                 return Ok(())
             }
 
             #[doc(hidden)]
-            #vis async unsafe fn _try_initialize_async<E> (self: ::sis::core::pin::Pin<&'this mut Self>, #(#async_try_init_arg),*) -> ::sis::core::result::Result<(), E> {
+            #[allow(unused)]
+            #vis async unsafe fn _try_initialize_async<E: 'static> (self: ::sis::core::pin::Pin<&'this mut Self>, #(#async_try_init_arg),*) -> ::sis::core::result::Result<(), E> {
                 let Self { #(#field_names,)* _pin }: &'this mut Self = ::sis::core::pin::Pin::into_inner_unchecked(self);
                 #(#async_try_init)*
                 return Ok(())
             }
 
             #(#getter)*
+            */
         }
 
         impl #impl_generics ::sis::core::ops::Drop for #ident #ty_generics #where_generics {
+            #[inline]
             fn drop (&mut self) {
                 unsafe {
                     #(#drop)*
@@ -92,6 +100,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             }
         }
 
+        #[allow(unused)]
         macro_rules! #macro_name {
             ({ $($new:expr),* }, { $($init:expr),* }, $name:ident) => {
                 let mut $name = unsafe { <#ident>::_new_uninit($($new),*) };
@@ -160,6 +169,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             };
         }
 
+        #[allow(unused)]
         macro_rules! #macro_try_name {
             ({ $($new:expr),* }, { $($init:expr),* }, $name:ident) => {
                 let mut $name = unsafe { <#ident>::_new_uninit($($new),*) };
@@ -254,7 +264,7 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
     
     let mut drop_output = Vec::with_capacity(fields.len());
 
-    let mut previous_fields = Vec::with_capacity(fields.len());
+    let mut previous_fields = Vec::<Ident>::with_capacity(fields.len());
     for (i, field) in fields.iter().enumerate() {
         let mut field_mut = field.borrow_mut();
         let attrs = &mut field_mut.attrs;
@@ -270,13 +280,13 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
         };
 
         drop(field_mut);
-        let field = field.borrow();
-        let field = &field as &Field;
+        let field_ref = field.borrow();
+        let field_ref = &field_ref as &Field;
         
         if let Some(result) = result {
             let tokens = proc_macro::TokenStream::from(result.tokens);
             let BorrowInput { targets, .. } = syn::parse_macro_input::parse::<BorrowInput>(tokens)?;
-            let Field { attrs, vis, ident, colon_token, ty } = field;
+            let Field { attrs, vis, ident, colon_token, ty } = field_ref;
 
             let (target_mut, target_ident) = targets.into_iter()
                 .map(|x| (x.mutability, x.ident))
@@ -330,41 +340,48 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
             for ident in target_ident.iter() {
                 for field in fields.iter().map(RefCell::borrow) {
                     if field.ident.as_ref() == Some(ident) {
-                        target_ty.push(Ref::map(field, |x| &x.ty));
+                        target_ty.push((previous_fields.contains(&ident), field.ty.clone()));
                         break
                     }
                 }
             }
-            let target_ty = target_ty.iter()
-                .map(Deref::deref)
-                .collect::<Vec<_>>();
 
             // Initialization argument
             let mut init_args = Vec::with_capacity(target_mut.len());
-            let mut init_pinning_args = Vec::with_capacity(target_mut.len());
-            for (target_mut, target_ty) in target_mut.iter().zip(target_ty.iter()) {
-                let (ty, pinning) = match target_mut {
-                    Some(target_mut) => (
+            let mut pinning_args = Vec::with_capacity(target_mut.len());
+            for ((target_mut, (is_self_ref, target_ty)), target_ident) in target_mut.iter().zip(target_ty.iter()).zip(target_ident.iter()) {
+                let (ty, pinning) = match (is_self_ref, target_mut) {
+                    (true, Some(target_mut)) => (
                         quote! { ::sis::core::pin::Pin<&'this #target_mut #target_ty> },
                         quote! {
-                            #(
-                                let #target_ident = ::sis::core::pin::Pin::new_unchecked(#target_ident as &'this #target_mut #target_ty)
-                            )*
+                            ::sis::core::pin::Pin::new_unchecked(#target_ident.assume_init_mut())
                         }
                     ),
                     
-                    None => (
+                    (true, None) => (
                         quote! { &'this #target_ty },
                         quote! { 
-                            #(
-                                let #target_ident = #target_ident as &'this #target_ty;
-                            )*
+                            #target_ident.assume_init_ref()
+                        }
+                    ),
+
+                    (false, Some(target_mut)) => (
+                        quote! { ::sis::core::pin::Pin<&'this #target_mut #target_ty> },
+                        quote! {
+                            ::sis::core::pin::Pin::new_unchecked(#target_ident as &'this #target_mut #target_ty)
+                        }
+                    ),
+                    
+                    (false, None) => (
+                        quote! { &'this #target_ty },
+                        quote! { 
+                            #target_ident as &'this #target_ty
                         }
                     )
                 };
                 
                 init_args.push(ty);
-                init_pinning_args.push(pinning);
+                pinning_args.push(pinning);
             }
 
             // Regular initializer
@@ -374,8 +391,7 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 ) -> #ty
             });
             init_output.push(quote! {{
-                #(#init_pinning_args)*
-                #ident.write(#init_f (#(#target_ident),*));
+                #ident.write(#init_f (#(#pinning_args),*));
             }});
 
             // Async regular initializer
@@ -386,9 +402,8 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 >
             });
             async_init_output.push(quote! {{
-                #(#init_pinning_args)*
                 #ident.write(
-                    #init_f.call((#(#target_ident,)*)).await
+                    #init_f.call((#(#pinning_args,)*)).await
                 );
             }});
 
@@ -399,12 +414,11 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 ) -> ::sis::core::result::Result<#ty, E>
             });
             try_init_output.push(quote! {{
-                #(#init_pinning_args)*
-                match (#init_f (#(#target_ident),*)) {
+                match (#init_f (#(#pinning_args),*)) {
                     Ok(x) => #ident.write(x),
                     Err(e) => {
                         #(
-                            #previous_fields.assume_init_drop();
+                            let _ = #previous_fields.assume_init_read();
                         )*
                         return Err(e)
                     }
@@ -419,12 +433,11 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
                 >
             });
             async_try_init_output.push(quote! {{
-                #(#init_pinning_args)*
-                match #init_f.call( (#(#target_ident,)*) ).await {
+                match #init_f.call( (#(#pinning_args,)*) ).await {
                     Ok(x) => #ident.write(x),
                     Err(e) => {
                         #(
-                            #previous_fields.assume_init_drop();
+                            let _ = #previous_fields.assume_init_read();
                         )*
                         return Err(e)
                     }
@@ -440,9 +453,9 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
 
             previous_fields.push(getter_ident);
         } else {
-            let Field { ident, colon_token, ty, .. } = &field;
+            let Field { ident, colon_token, ty, .. } = &field_ref;
             new_output.push(quote! { #ident #colon_token #ty });
-            field_def_output.push(field.to_token_stream());
+            field_def_output.push(field_ref.to_token_stream());
             field_new_output.push(ident.to_token_stream());
         }
     }
@@ -476,8 +489,8 @@ fn builder_fields (fields: &Punctuated<RefCell<Field>, Token![,]>) -> syn::Resul
 struct BorrowInput {
     #[paren]
     _paren_token: syn::token::Paren,
-    #[inside(_paren_token)]
     #[call(Punctuated::parse_terminated)]
+    #[inside(_paren_token)]
     targets: Punctuated<Borrow, Token![,]>
 }
 
