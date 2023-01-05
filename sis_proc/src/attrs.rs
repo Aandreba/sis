@@ -13,6 +13,7 @@ impl SisAttr {
     pub fn as_const (&self) -> Option<&Token![const]> {
         match self {
             Self::Const(x) => Some(x),
+            #[allow(unreachable_patterns)]
             _ => None
         }
     }

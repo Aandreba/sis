@@ -63,7 +63,6 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
                 #(#init)*
             }
 
-            /*
             #[doc(hidden)]
             #[allow(unused)]
             #vis async unsafe fn _initialize_async (self: ::sis::core::pin::Pin<&'this mut Self>, #(#async_init_arg),*) {
@@ -88,7 +87,6 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             }
 
             #(#getter)*
-            */
         }
 
         impl #impl_generics ::sis::core::ops::Drop for #ident #ty_generics #where_generics {
