@@ -202,6 +202,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
                 unsafe {
                     if let Err(e) = <#ident>::_try_initialize(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*) {
                         core::mem::forget($name);
+                        return Err(e)
                     }
                 }
                 #[allow(unused_mut)]
@@ -213,6 +214,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
                 unsafe {
                     if let Err(e) = <#ident>::_try_initialize_async(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*).await {
                         core::mem::forget($name);
+                        return Err(e)
                     }
                 }
                 #[allow(unused_mut)]
@@ -224,6 +226,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
                 unsafe {
                     if let Err(e) = <#ident>::_try_initialize(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*) {
                         core::mem::forget($name);
+                        return Err(e)
                     }
                 }
                 #[allow(unused_mut)]
@@ -235,6 +238,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
                 unsafe {
                     if let Err(e) = <#ident>::_try_initialize_async(core::pin::Pin::new_unchecked(&mut *(::sis::core::ops::DerefMut::deref_mut(&mut $name) as *mut _)), $($init),*).await {
                         core::mem::forget($name);
+                        return Err(e)
                     }
                 }
                 #[allow(unused_mut)]
