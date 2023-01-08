@@ -1,8 +1,8 @@
 use std::{cell::{RefCell, Ref}, ops::Deref};
 use derive_syn_parse::Parse;
 use proc_macro2::{TokenStream, Ident};
-use quote::{quote, ToTokens, format_ident};
-use syn::{FieldsNamed, Fields, ItemStruct, FieldsUnnamed, punctuated::Punctuated, Token, Field, parse_quote, Type, TypeReference};
+use quote::{quote, ToTokens, format_ident, quote_spanned};
+use syn::{FieldsNamed, Fields, ItemStruct, FieldsUnnamed, punctuated::Punctuated, Token, Field, parse_quote, Type, TypeReference, spanned::Spanned};
 use crate::{to_snake_case, attrs::SisAttr};
 
 #[inline]
@@ -34,7 +34,9 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
     let field_names = field_names.iter().map(Deref::deref).collect::<Vec<_>>();
     let macro_name = format_ident!("new_{}", to_snake_case(&ident.to_string()));
     let macro_try_name = format_ident!("try_{}", macro_name);
+
     let const_token = sis_attrs.iter().find_map(SisAttr::as_const);
+    let extern_token = sis_attrs.iter().find_map(SisAttr::as_export).map(|x| quote_spanned! { x.span() => #[macro_export] });
 
     return quote! {
         #(#attrs)*
@@ -98,6 +100,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             }
         }
 
+        #extern_token
         #[allow(unused)]
         macro_rules! #macro_name {
             ({ $($new:expr),* }, { $($init:expr),* }, $name:ident) => {
@@ -167,6 +170,7 @@ pub fn self_referencing_impl (sis_attrs: &Punctuated<SisAttr, Token![,]>, ItemSt
             };
         }
 
+        #extern_token
         #[allow(unused)]
         macro_rules! #macro_try_name {
             ({ $($new:expr),* }, { $($init:expr),* }, $name:ident) => {
